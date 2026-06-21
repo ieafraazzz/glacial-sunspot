@@ -1,0 +1,15 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+outputs.json
+.terraform.lock.hcl
+
+# Python
+__pycache__/
+*.pyc
+
+# Local secrets
+.env
+*.pem
+*.key

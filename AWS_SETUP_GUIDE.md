@@ -1,0 +1,156 @@
+# AWS Manual Setup Guide - Secure Banking Microservices
+
+This guide walks you through setting up the multi-VPC architecture manually in the AWS Console.
+
+## Prerequisites
+- An AWS Account (Free Tier eligible)
+- Basic familiarity with AWS Console
+
+---
+
+## Phase 1: Network Setup (VPCs & Subnets)
+
+### 1. Create Main VPC (VPC 1)
+1. Go to **VPC Dashboard** > **Your VPCs** > **Create VPC**.
+2. **Name**: `Banking-Main-VPC`
+3. **IPv4 CIDR**: `10.0.0.0/16`
+4. Click **Create VPC**.
+
+### 2. Create Subnets for VPC 1
+1. Go to **Subnets** > **Create Subnet**.
+2. Select `Banking-Main-VPC`.
+3. **Subnet 1 (Public)**:
+   - Name: `Public-Subnet-1`
+   - CIDR: `10.0.1.0/24`
+   - AZ: `us-east-1a` (or your preferred region)
+4. **Subnet 2 (Private)**:
+   - Name: `Private-Subnet-1`
+   - CIDR: `10.0.2.0/24`
+   - AZ: `us-east-1a`
+5. Click **Create subnet**.
+
+### 3. Create Backup VPC (VPC 2)
+1. Create another VPC.
+2. **Name**: `Banking-Backup-VPC`
+3. **IPv4 CIDR**: `192.168.0.0/16` (Must be different from VPC 1 to peer)
+4. Click **Create VPC**.
+
+### 4. Create Subnet for VPC 2
+1. Create Subnet in `Banking-Backup-VPC`.
+2. **Name**: `Backup-Private-Subnet`
+3. **CIDR**: `192.168.1.0/24`
+4. Click **Create subnet**.
+
+### 5. Setup Internet Gateway (for Public Subnet)
+1. Go to **Internet Gateways** > **Create internet gateway**.
+2. Name: `Banking-IGW`.
+3. Action > **Attach to VPC** > Select `Banking-Main-VPC`.
+
+### 6. Configure Route Tables
+**Public Route Table (VPC 1):**
+1. Create Route Table -> Name: `Public-RT` -> VPC: `Banking-Main-VPC`.
+2. Edit Routes -> Add Route -> Dest: `0.0.0.0/0`, Target: `Banking-IGW`.
+3. Subnet Associations -> Edit -> Select `Public-Subnet-1`.
+
+**Private Route Table (VPC 1):**
+1. Create Route Table -> Name: `Private-RT-VPC1` -> VPC: `Banking-Main-VPC`.
+2. No internet route needed initially.
+3. Subnet Associations -> Edit -> Select `Private-Subnet-1`.
+
+**Private Route Table (VPC 2):**
+1. Create Route Table -> Name: `Private-RT-VPC2` -> VPC: `Banking-Backup-VPC`.
+2. Subnet Associations -> Edit -> Select `Backup-Private-Subnet`.
+
+---
+
+## Phase 2: VPC Peering
+
+### 1. Create Peering Connection
+1. Go to **Peering Connections** > **Create Peering Connection**.
+2. Name: `Banking-Peering`.
+3. Requester: `Banking-Main-VPC`.
+4. Accepter: `Banking-Backup-VPC`.
+5. Click **Create**.
+
+### 2. Accept Request
+1. Since both are in your account, select the peering connection.
+2. Actions > **Accept Request**.
+
+### 3. Update Route Tables for Peering
+**VPC 1 Private Route Table (`Private-RT-VPC1`):**
+- Add Route: Dest `192.168.0.0/16` -> Target `peering-connection-id`.
+
+**VPC 2 Private Route Table (`Private-RT-VPC2`):**
+- Add Route: Dest `10.0.0.0/16` -> Target `peering-connection-id`.
+
+---
+
+## Phase 3: Security Groups
+
+### 1. Transaction SG (Public)
+- **VPC**: `Banking-Main-VPC`
+- **Inbound**:
+  - Type: HTTP (80) -> Source: `0.0.0.0/0` (Website access not needed if using port 5000, maybe Custom TCP 5000)
+  - Type: Custom TCP (5000) -> Source: `0.0.0.0/0` (For API access)
+  - Type: SSH (22) -> Source: `My IP`
+
+### 2. Account SG (Private)
+- **VPC**: `Banking-Main-VPC`
+- **Inbound**:
+  - Type: Custom TCP (5002) -> Source: `10.0.1.0/24` (Traffic from Public Subnet only)
+  - Type: SSH (22) -> Source: `10.0.1.0/24` (Bastion host access if needed)
+
+### 3. Backup SG (Private - VPC 2)
+- **VPC**: `Banking-Backup-VPC`
+- **Inbound**:
+  - Type: Custom TCP (5003) -> Source: `10.0.2.0/24` (Traffic from Account Service Subnet only)
+
+---
+
+## Phase 4: EC2 Deployment
+
+### 1. Launch Transaction Instance
+- **AMI**: Amazon Linux 2023 or Ubuntu
+- **Type**: t2.micro (Free Tier)
+- **Network**: `Banking-Main-VPC` > `Public-Subnet-1`
+- **Auto-assign Public IP**: Enable
+- **Security Group**: Transaction SG
+- **User Data**:
+  ```bash
+  #!/bin/bash
+  yum update -y
+  yum install python3-pip git -y
+  pip3 install flask flask-cors requests
+  # Clone code or copy files here...
+  # export ACCOUNT_SERVICE_URL="http://<ACCOUNT_PRIVATE_IP>:5002"
+  # python3 app.py
+  ```
+
+### 2. Launch Account Instance
+- **Network**: `Banking-Main-VPC` > `Private-Subnet-1`
+- **Auto-assign Public IP**: Disable
+- **Security Group**: Account SG
+- **User Data**:
+  ```bash
+  #!/bin/bash
+  yum update -y
+  yum install python3-pip git -y
+  pip3 install flask requests
+  # export BACKUP_SERVICE_URL="http://<BACKUP_PRIVATE_IP>:5003"
+  # python3 app.py
+  ```
+
+### 3. Launch Backup Instance
+- **Network**: `Banking-Backup-VPC` > `Backup-Private-Subnet`
+- **Security Group**: Backup SG
+- **User Data**: Similar setup, run backup service on 5003.
+
+---
+
+## Phase 5: Website Setup
+
+1. Open `script.js` in the `frontend` folder.
+2. Replace `API_BASE_URL` with `http://<TRANSACTION_INSTANCE_PUBLIC_IP>:5000`.
+3. Create an S3 Bucket -> Properties -> Static Website Hosting -> Enable.
+4. Upload `index.html`, `style.css`, and `script.js`.
+5. Access the endpoint URL generated by S3.
